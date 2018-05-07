@@ -32,9 +32,10 @@ class ValidActions(Enum):
 
 class Player:
     """AI player"""
+    player_status = PlayerStatus.Alive
 
     def __init__(self):
-        self.player_status = PlayerStatus.Alive
+        pass
 
     def forfeit(self):
         self.player_status = PlayerStatus.Forfeit
@@ -225,15 +226,13 @@ class GhostGame():
             raise ValueError(f"Invalid PlayerStatus '{sender.player_status}'")
 
     def game_over(self):
-        # TODO: Figure out why the Player class doesn't seem to have an attribute 'player_status' even though it's totally there. Inheritance problem maybe...?
         # Find the alive player to give them credit
-        # for p in self.players:
-        #     if p.player_status == PlayerStatus.Alive:
-        #         alive_player = p
-        #         break
+        for p in self.players:
+            if p.player_status == PlayerStatus.Alive:
+                alive_player = p
+                break
 
-        # print(f'GAME OVER. PLAYER {alive_player} WINS')
-        print('GAME OVER')
+        print(f'GAME OVER. PLAYER {alive_player} WINS')
         exit(0)
 
 
