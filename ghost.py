@@ -7,6 +7,7 @@ from randomdict import RandomDict
 from enum import Enum
 from pydispatch import dispatcher
 
+valid_chars = alphabet + '?!'
 
 class PlayerStatus(Enum):
     """Enum for player status tracking"""
@@ -33,9 +34,24 @@ class ValidActions(Enum):
 class Player:
     """AI player"""
     player_status = PlayerStatus.Alive
+    player_name = None
 
-    def __init__(self):
-        pass
+    def __init__(self, name=None):
+        __ai_player_names = ['Alice', 'Bob', 'Chuck', 'Dick', 'Ester', 'Francine']
+        if name is None:
+            self.player_name = random.choice(__ai_player_names)
+        else:
+            self.player_name = name
+
+    def challenge(self, gg):
+        # Another player is challenging us. We now have to find a word which can be constructed using the current
+        # working string
+        candidates = gg.candidate_words()
+
+        if candidates is not None:
+            return random.choice(candidates)
+        else:
+            return None
 
     def forfeit(self):
         self.player_status = PlayerStatus.Forfeit
@@ -49,75 +65,55 @@ class Player:
         self.player_status = PlayerStatus.Alive
         dispatcher.send(signal=PlayerStatus.Alive, sender=self)
 
-    def get_next_action(self):
+    def get_next_action(self, gg=None):
+        # TODO: figure out best practice. It's probably not a dummy arg in the parent class's method...
         # The AI will always attempt to append a letter
-        return ValidActions.AppendLetter
-
-    def get_letter(self):
-        # Randomly select a letter from the alphabet
         return random.choice(alphabet[0:26])
-
-    def validate_letter(self, l):
-        # Letter must be in [a-z]
-        if len(l) != 1:
-            return False
-
-        match = re.match(r'[a-zA-Z]', l)
-        if match is None:
-            return False
-        else:
-            return True
 
 
 class HumanPlayer(Player):
     """Overrides the necessary methods of Player class to allow for human interaction"""
 
-    def __init__(self):
-        super().__init__(self)
+    def __init__(self, name=None):
 
-    def get_letter(self):
+        __human_player_names = ['Mike', 'Jane']
 
-        attempts = 0
-        while attempts < 3:
-            response = input('Enter a letter>>')
-            if super().validate_letter(self, response):
-                return response
-            else:
-                attempts += 1
+        if name is None:
+            self.player_name = random.choice(__human_player_names)
+        else:
+            self.player_name = name
 
-        raise ValueError('Too many attempts made, user is bad and dumb')
+    def challenge(self, gg):
+        # Challenge the human player to provide any possible word that could start with the current string
+        print(f'{self.player_name}: you\'ve been challenged.')
+        is_valid = False
+        while not is_valid:
+            response = input(f'Enter a word that starts with "{gg.s}">>')
+            is_valid = response.isalpha()
 
-    def get_next_action(self):
+    def get_next_action(self, gg):
         attempts = 0
         is_valid = False
         while not is_valid and attempts < 3:
-            # TODO: try-catch logic for user inputs that are non-numeric
-            print("Choose an action for this turn:")
-            for a in list(ValidActions):
-                print(f'{a.value}: {a.name}')
-            response = int(input('Enter a number>>'))
+            response = input(f"{gg.s}>>")
 
-            if ValidActions.has_value(response):
-                is_valid = True
-                # Convert the int to an instance of the enum.
-                response = ValidActions(response)
+            if response in valid_chars:
+                return response.lower()
             else:
                 attempts += 1
 
         if not is_valid:
-            raise ValueError("User is bad and dumb")
-
-        return response
+            raise ValueError("User failed to select a valid option.")
 
 
-class GhostGame():
+class GhostGame:
     """Primary game object"""
 
     def help(self):
         with open(self.help_file) as file_obj:
             print(str(file_obj.read()))
 
-    def __init__(self, num_players=2, num_human_players=1, dict_file='dictionary1.txt'):
+    def __init__(self, num_players=2, num_human_players=1, dict_file='20k_word_freq_dict.txt'):
         # User Options
         self.min_word_length = 3
 
@@ -129,15 +125,55 @@ class GhostGame():
 
         # Resources
         self.dict_file = dict_file
-        self.dict_url = "https://github.com/dwyl/english-words/raw/master/words_alpha.txt"
+        self.dictionaries = {'test_dictionary.txt': 'test_dictionary.txt',
+                             'simple_dict.txt': 'https://github.com/dwyl/english-words/raw/master/words_alpha.txt',
+                             '20k_word_freq_dict.txt': 'https://raw.githubusercontent.com/first20hours/google-10000-english/master/20k.txt'}
         self.help_file = 'README.md'
 
         # Download the dictionary text file, if it doesn't already exist on disk
         self.download_dictionary_file()
 
         self.dict_string = self.get_dict_string()
-        self.word_list = self.dict_string.splitlines()
         self.word_set = self.build_word_set()
+
+        self.print_game_start_message()
+
+    def remove_word(self, word):
+        """Removes a given word from both the dict_string and word_set. Presumes that the word has already been
+        confirmed to exist in both. """
+
+        # Remove word from set
+        self.word_set.discard(word)
+
+        # Remove the word from dict_string
+        result = re.search(word, self.dict_string)
+        self.dict_string = self.dict_string[0:result.start() - 1] + self.dict_string[result.end():-1]
+
+    def candidate_words(self, num_candidates=1):
+        # Produce a list of words which start with the current string
+        words_found = []
+        i = 0
+        for match in re.finditer(self.s + ".*", self.dict_string):
+            words_found.append(match.group())
+            i += 1
+            if i >= num_candidates:
+                break
+
+        if words_found:
+            return words_found
+        else:
+            return None
+
+    def print_game_start_message(self):
+        print(f'Starting game with {self.num_alive_players} players:')
+        i = 1
+        for p in self.players:
+            if isinstance(p, HumanPlayer):
+                player_type = 'Human'
+            else:
+                player_type = 'AI'
+            print(f'Player {i}: {p.player_name} ({player_type})')
+            i += 1
 
     def get_current_player(self):
         return self.players[self.i_current_player]
@@ -152,9 +188,9 @@ class GhostGame():
         players = []
         for i in range(0, num_players):
             if i < num_human_players:
-                players.append(HumanPlayer)
+                players.append(HumanPlayer())
             else:
-                players.append(Player)
+                players.append(Player())
             # Connect event handler
             dispatcher.connect(signal=dispatcher.Any, receiver=self.handle_player_state_change, sender=players[i])
         return players
@@ -167,11 +203,10 @@ class GhostGame():
 
     def download_dictionary_file(self):
         dict_file_path = Path(self.dict_file)
-        word_set = set()
         if not dict_file_path.is_file():
-            print('Downloading file...')
+            print(f'Downloading file from {self.dictionaries[self.dict_file]}...')
             # TODO: Add error handling for failed URL requests
-            urllib.request.urlretrieve(self.dict_url, dict_file_path)
+            urllib.request.urlretrieve(self.dictionaries[self.dict_file], dict_file_path)
 
     def get_dict_string(self):
         """Read the dictionary text file in as a single string for regexing"""
@@ -188,14 +223,12 @@ class GhostGame():
 
     def check_word(self, test_word):
         """Check if a given test_word is an exact match for an existing dictionary word"""
+        if test_word is None:
+            return False
         return test_word.lower() in self.word_set
 
     def check_possible_word(self, test_word):
         """Check if a test word is on it's way to becoming a possible word"""
-        num_letters = len(test_word)
-        if num_letters < 3:
-            raise ValueError('test_word must be at least 3 characters')
-
         # Look for a line where this test_word is a substring
         r = re.escape(test_word)
         match = re.search(r, self.dict_string)
@@ -208,11 +241,6 @@ class GhostGame():
     def print_string(self):
         print(f'Current string = "{self.s}"')
         print('')
-        # box_size = min(10,len(self.s))
-        # horizontal_line = '-' * box_size
-        # print(horizontal_line)
-        # word_line = '|' + self.s + ' '*(box_size - len(self.s)) + '|'
-        # print(horizontal_line)
 
     def handle_player_state_change(self, sender):
         """Simple event handler"""
@@ -231,8 +259,12 @@ class GhostGame():
             if p.player_status == PlayerStatus.Alive:
                 alive_player = p
                 break
+        if isinstance(alive_player, HumanPlayer):
+            player_type = 'Human'
+        else:
+            player_type = 'AI'
 
-        print(f'GAME OVER. PLAYER {alive_player} WINS')
+        print(f'GAME OVER. PLAYER {alive_player.player_name} ({player_type}) WINS')
         exit(0)
 
 
@@ -241,10 +273,6 @@ def main():
 
     # Instantiate a GhostGame
     gg = GhostGame()
-
-    # Register the event handlers
-    # for player in gg.players:
-    #     dispatcher.connect(signal=dispatcher.Any, receiver=gg.handle_player_state_change, sender=player)
 
     # Game loop
     while True:
@@ -255,44 +283,47 @@ def main():
         gg.print_string()
 
         # Prompt the user for what action they want to take this turn
-        # TODO - figure out how to call this properly
-        print(f'{this_player}\'s turn')
-        this_action = this_player.get_next_action(this_player)
+        print(f'{this_player.player_name}\'s turn')
+        this_action = this_player.get_next_action(gg)
 
         # Take the chosen action
-        if this_action == ValidActions.AppendLetter:
-            # Get the player's next letter
-            next_letter = this_player.get_letter(this_player)
+        if this_action in alphabet:
+            # Append the letter to the string
+            gg.s += this_action
 
-            # Append that letter to the string
-            gg.s += next_letter
-
-        elif this_action is ValidActions.Forfeit:
+        elif this_action == "!":
             # Player forfeits
-            this_player.forfeit(this_player)
+            this_player.forfeit()
             print(f'Player {gg.i_current_player} forfeits')
 
-        elif this_action == ValidActions.Challenge:
-            # Challenge the previous player
-            if gg.check_possible_word(gg.s):
-                # It's possible for the previous player to construct a valid word.
-                # Ask the previous player to type the word they're thinking of
-                last_players_word = last_player.challenge(last_player)
+        elif this_action == "?":
+            # Ask the previous player to reveal the word they're thinking of
+            last_players_word = last_player.challenge(gg)
+            if gg.check_word(last_players_word):
+                # The word last_player provided IS in the dictionary, so they're safe.
+                # this_player made an erroneous challenge, so they die
+                if not isinstance(last_player,HumanPlayer):
+                    # Tell the human players what word the AI was thinking of
+                    print(f'{last_player.player_name} has passed the challenge!')
+                    print(f'The word they were thinking of was "{last_players_word}"')
+                    print(f'{this_player.player_name} dies!')
 
-                if gg.check_word(last_players_word):
-                    # The word last_player provided IS in the dictionary, so they're safe.
-                    # this_player made an erroneous challenge, so they die
-                    this_player.die(this_player)
-                else:
-                    # last_player didn't provide a valid word, so they fail the challenge.
-                    last_player.die(last_player)
+                this_player.die()
             else:
-                # The current string can't possibly be made into a word, so last_player loses
-                last_player.die(last_player)
+                # last_player didn't provide a valid word, so they fail the challenge.
+                last_player.die()
 
         # Check whether the end-game condition is satisfied
-        if gg.num_alive_players < 2 or (len(gg.s) > gg.min_word_length and gg.check_word(gg.s)):
+        this_player_formed_a_word = (len(gg.s) >= gg.min_word_length and gg.check_word(gg.s))
+        if this_player_formed_a_word:
+            this_player.die()
+            print(f'{this_player.player_name} spelled a word: "{gg.s}".')
+
+        if gg.num_alive_players < 2:
             gg.game_over()
+        elif this_player_formed_a_word:
+            # Remove this word from the dictionary so the remaining players can continue playing
+            gg.remove_word(gg.s)
 
         # Move to the next player's turn
         gg.next_player()

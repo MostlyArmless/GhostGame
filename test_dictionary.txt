@@ -1,4 +1,7 @@
 apple
+app
+apres
+apringle
 banana
 coin
 disaster
