@@ -13,8 +13,14 @@ valid_chars = alphabet + '?!'
 
 def fileread(filename):
     """Read a text file and return all contents as a string"""
-    with open(filename) as file_obj:
+    with open(filename, 'r') as file_obj:
         return str(file_obj.read())
+
+
+def filewrite(filename,s):
+    """Writes a string s to a text file. Overwrites file if it exists."""
+    with open(filename, 'w') as f:
+        f.write(s)
 
 
 class PlayerStatus(Enum):
@@ -76,16 +82,20 @@ class Player:
     def get_next_action(self, gg):
         """Choose the AI player's next move"""
         # Check whether the last player added a letter that can't possibly be turned into a word, and challenge them
-        if not gg.check_possible_word(gg.s):
+        if not gg.is_possible_word(gg.s):
             # Challenge the previous player
             return '?'
 
-        # Check whether the previous target word is still possible after the last round of added letters
-        if gg.s != self.target_word[0:len(gg.s)-1]:
+        if not gg.s:
+            # Special case: AI player going first starts with an empty string
             self.target_word = gg.get_target_word()
-            if self.target_word is None:
-                # There are no more words we can work towards. Admit defeat.
-                return '!'
+        else:
+            # Check whether the previous target word is still possible after the last round of added letters
+            if gg.s != self.target_word[0:len(gg.s)-1]:
+                self.target_word = gg.get_target_word()
+                if self.target_word is None:
+                    # There are no more words we can work towards. Admit defeat.
+                    return '!'
 
         print(f'Player "{self.player_name}" target_word = "{self.target_word}"')
         next_letter = self.target_word[len(gg.s)]
@@ -112,7 +122,10 @@ class HumanPlayer(Player):
             response = input(f'Enter a word that starts with "{gg.s}">>')
             is_valid = response.isalpha()
 
+        return response
+
     def get_next_action(self, gg):
+        """Human player's next move"""
         attempts = 0
         is_valid = False
         while not is_valid and attempts < 3:
@@ -134,7 +147,7 @@ class GhostGame:
         with open(self.help_file) as file_obj:
             print(str(file_obj.read()))
 
-    def __init__(self, num_players=2, num_human_players=1, dict_file='20k_word_freq_dict.txt'):
+    def __init__(self, num_players=2, num_human_players=0, dict_file='20k_word_freq_dict.txt'):
         # User Options
         self.min_word_length = 3
 
@@ -146,22 +159,41 @@ class GhostGame:
 
         # Resources
         self.dict_file = dict_file
-        self.dictionaries = {'test_dictionary.txt': 'test_dictionary.txt',
-                             'simple_dict.txt': 'https://github.com/dwyl/english-words/raw/master/words_alpha.txt',
+        self.dictionaries = {'standard_dictionary.txt': 'https://github.com/dwyl/english-words/raw/master/words_alpha.txt',
                              '20k_word_freq_dict.txt': 'https://raw.githubusercontent.com/first20hours/google-10000-english/master/20k.txt'}
         self.help_file = 'README.md'
-        self.custom_dict = 'custom_dictionary.txt'
+        self.whitelist_dictionary = 'user_dictionary_whitelist.txt'  # List of new words the user has added
+        self.blacklist_dictionary = 'user_dictionary_blacklist.txt'  # List of words the user does NOT want considered
 
-        # Download the dictionary text file, if it doesn't already exist on disk
-        self.download_dictionary_file()
+        # Download the dictionary text files, if they don't already exist on disk
+        self.download_dictionary_files()
 
         # Concatenate the custom and standard dictionaries
-        self.dict_string = fileread(self.custom_dict) + fileread(self.dict_file)
+        self.dict_string = self.build_dictionary()
         self.word_set = self.build_word_set()
 
         self.print_game_start_message()
 
+    def build_dictionary(self):
+        """Return a dict_string which is ordered by word frequency but doesn't contain any unusual non-words"""
+        whitelist = set(fileread(self.whitelist_dictionary).split('\n'))
+        blacklist = set(fileread(self.blacklist_dictionary).split('\n'))
+        standard_dict = set(fileread('standard_dictionary.txt').split('\n'))
+        freq_dict = fileread('20k_word_freq_dict.txt').split('\n')
+
+        dict_string = ''
+        removed_words = ''
+        for word in freq_dict:
+            if (word in standard_dict or word in whitelist) and word not in blacklist:
+                dict_string = dict_string + '\n' + word
+            else:
+                removed_words = removed_words + '\n' + word
+
+        filewrite('removed_words.txt', removed_words)
+        return dict_string
+
     def remove_word(self, word):
+        # TODO: test this function with 3 player AI
         """Removes a given word from both the dict_string and word_set. Presumes that the word has already been
         confirmed to exist in both."""
 
@@ -175,7 +207,6 @@ class GhostGame:
     def get_target_word(self):
         """Return a possible word that the AI player could work towards, which both contains the current string and
         won't result in this player losing"""
-
         # Find all possible words that contain the current string
         words_found = []
         i = 0
@@ -200,12 +231,14 @@ class GhostGame:
 
         if not safe_length_words:
             # There are possible words, but none of them are a safe length.
-            # The best strategy now is to target the longest possible word and hope another player makes a mistake
-            return max(words_found, key=len)
+            # TODO: make the AI choose the longest word (best strategy) but with some randomness (better replayability)
+            print('No safe words. Choosing random possible word.')
+            return random.choice(words_found)
 
         # Now we need to eliminate any words that are of a safe length but which start with another word that exists
         # e.g. "apples" might be a safe word in terms of length, but it starts with "app" which may not be a safe length
         winning_words = []
+        num_rejected = 0
         for word in safe_length_words:
             # Make each possible sub-word, check if it exists, and then check if it's a safe length
             is_safe = True
@@ -215,15 +248,19 @@ class GhostGame:
                 # Word is long enough that it might have unsafe subwords
                 for c in word[self.min_word_length-1:]:
                     sub_word = sub_word + c
-                    if self.check_word(sub_word) and not self.is_safe_length(sub_word):
+                    if self.is_complete_word(sub_word) and not self.is_safe_length(sub_word):
                         # This safe word contains a sub_word which is not safe. Reject it
                         is_safe = False
+                        num_rejected += 1
                         break
             if is_safe:
                 winning_words.append(word)
 
+        print(f'Rejected {num_rejected} words based on unsafe subwords')
+
         if not winning_words:
             # No remaining possible words will let us win, but we can try and hope someone else makes a mistake
+            print('No winning words. Choosing random possible word.')
             return random.choice(safe_length_words)
 
         # Choose a random word from the top of the list
@@ -238,14 +275,12 @@ class GhostGame:
 
     def print_game_start_message(self):
         print(f'Starting game with {self.num_alive_players} players:')
-        i = 1
-        for p in self.players:
+        for i, p in enumerate(self.players):
             if isinstance(p, HumanPlayer):
                 player_type = 'Human'
             else:
                 player_type = 'AI'
             print(f'Player {i}: {p.player_name} ({player_type})')
-            i += 1
 
     def get_current_player(self):
         return self.players[self.i_current_player]
@@ -273,25 +308,27 @@ class GhostGame:
         else:
             self.i_current_player += 1
 
-    def download_dictionary_file(self):
-        dict_file_path = Path(self.dict_file)
-        if not dict_file_path.is_file():
-            print(f'Downloading file from {self.dictionaries[self.dict_file]}...')
-            # TODO: Add error handling for failed URL requests
-            urllib.request.urlretrieve(self.dictionaries[self.dict_file], dict_file_path)
+    def download_dictionary_files(self):
+        for filename, url in self.dictionaries.items():
+            dict_file_path = Path(filename)
+            if not dict_file_path.is_file():
+                print(f'Downloading file from {url}...')
+                # TODO: Add error handling for failed URL requests
+                urllib.request.urlretrieve(url, filename)
 
     def build_word_set(self):
         """Build a set of all words in the dict_string"""
         return set(self.dict_string.split('\n'))
 
-    def check_word(self, test_word):
+    def is_complete_word(self, test_word):
         """Check if a given test_word is an exact match for an existing dictionary word"""
         if test_word is None:
             return False
         return test_word.lower() in self.word_set
 
-    def check_possible_word(self, test_word):
+    def is_possible_word(self, test_word):
         """Check if a test word is on it's way to becoming a possible word"""
+        # TODO: add handling for bidirectional ghost
         # Look for a line where this test_word is a substring
         r = re.escape(test_word)
         match = re.search(r, self.dict_string)
@@ -328,7 +365,26 @@ class GhostGame:
             player_type = 'AI'
 
         print(f'GAME OVER. PLAYER {alive_player.player_name} ({player_type}) WINS')
-        exit(0)
+        print(f'Choose option:\n1. Add "{gg.s}" to blacklist so it won\'t be considered a word in the future\n2. Play again\n3. Quit')
+        is_valid = False
+        while not is_valid:
+            response = input('>>')
+            if len(response) == 1:
+                response = int(response)
+            else:
+                continue
+
+            if int(response) in {1, 2, 3}:
+                is_valid = True
+
+        if response == 1:
+            self.add_to_blacklist(self.s)
+        elif response == 2:
+            # TODO: finish implementing this.
+            return
+        elif response == 3:
+            exit(0)
+
 
 
 def main():
@@ -362,10 +418,10 @@ def main():
         elif this_action == "?":
             # Ask the previous player to reveal the word they're thinking of
             last_players_word = last_player.challenge(gg)
-            if gg.check_word(last_players_word):
+            if gg.is_complete_word(last_players_word):
                 # The word last_player provided IS in the dictionary, so they're safe.
                 # this_player made an erroneous challenge, so they die
-                if not isinstance(last_player,HumanPlayer):
+                if not isinstance(last_player, HumanPlayer):
                     # Tell the human players what word the AI was thinking of
                     print(f'{last_player.player_name} has passed the challenge!')
                     print(f'The word they were thinking of was "{last_players_word}"')
@@ -377,13 +433,14 @@ def main():
                 last_player.die()
 
         # Check whether the end-game condition is satisfied
-        this_player_formed_a_word = (len(gg.s) >= gg.min_word_length and gg.check_word(gg.s))
+        this_player_formed_a_word = (len(gg.s) >= gg.min_word_length and gg.is_complete_word(gg.s))
         if this_player_formed_a_word:
             this_player.die()
             print(f'{this_player.player_name} spelled a word: "{gg.s}".')
 
         if gg.num_alive_players < 2:
             gg.game_over()
+            continue
         elif this_player_formed_a_word:
             # Remove this word from the dictionary so the remaining players can continue playing
             gg.remove_word(gg.s)
